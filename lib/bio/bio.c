@@ -379,6 +379,28 @@ void bio_close(bdev_t *dev)
     bdev_dec_ref(dev);
 }
 
+bdev_t *bio_open_by_label(const char *label)
+{
+    bdev_t *bdev = NULL;
+
+    LTRACEF(" '%s'\n", label);
+
+    /* see if it's in our list */
+    bdev_t *entry;
+    mutex_acquire(&bdevs.lock);
+    list_for_every_entry(&bdevs.list, entry, bdev_t, node) {
+        DEBUG_ASSERT(entry->ref > 0);
+        if (entry->label && !strcmp(entry->label, label)) {
+            bdev = entry;
+            bdev_inc_ref(bdev);
+            break;
+        }
+    }
+    mutex_release(&bdevs.lock);
+
+    return bdev;
+}
+
 ssize_t bio_read(bdev_t *dev, void *buf, off_t offset, size_t len)
 {
     LTRACEF("dev '%s', buf %p, offset %lld, len %zd\n", dev->name, buf, offset, len);
@@ -489,6 +511,7 @@ void bio_initialize_bdev(bdev_t *dev,
     dev->erase_byte = 0;
     dev->ref = 0;
     dev->flags = flags;
+    dev->label = NULL;
 
 #if DEBUG
     // If we have been supplied information about our erase geometry, sanity
@@ -574,8 +597,8 @@ void bio_dump_devices(void)
     mutex_acquire(&bdevs.lock);
     list_for_every_entry(&bdevs.list, entry, bdev_t, node) {
 
-        printf("\t%s, size %lld, bsize %zd, ref %d",
-               entry->name, entry->total_size, entry->block_size, entry->ref);
+        printf("\t%s, size %lld, bsize %zd, ref %d, label %s",
+               entry->name, entry->total_size, entry->block_size, entry->ref, entry->label);
 
         if (!entry->geometry_count || !entry->geometry) {
             printf(" (no erase geometry)\n");
