@@ -17,8 +17,11 @@
 #ifndef __KERNEL_SEMAPHORE_H
 #define __KERNEL_SEMAPHORE_H
 
+#include <compiler.h>
 #include <kernel/thread.h>
 #include <kernel/mutex.h>
+
+__BEGIN_CDECLS;
 
 #define SEMAPHORE_MAGIC 'sema'
 
@@ -37,8 +40,10 @@ typedef struct semaphore {
 
 void sem_init(semaphore_t *, unsigned int);
 void sem_destroy(semaphore_t *);
-status_t sem_post(semaphore_t *, bool resched);
+int sem_post(semaphore_t *, bool resched);
 status_t sem_wait(semaphore_t *);
 status_t sem_trywait(semaphore_t *);
 status_t sem_timedwait(semaphore_t *, lk_time_t);
+
+__END_CDECLS;
 #endif

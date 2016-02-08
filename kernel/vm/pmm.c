@@ -31,10 +31,12 @@
 #include <string.h>
 #include <pow2.h>
 #include <lib/console.h>
+#include <kernel/mutex.h>
 
 #define LOCAL_TRACE 0
 
 static struct list_node arena_list = LIST_INITIAL_VALUE(arena_list);
+static mutex_t lock = MUTEX_INITIAL_VALUE(lock);
 
 #define PAGE_BELONGS_TO_ARENA(page, arena) \
     (((uintptr_t)(page) >= (uintptr_t)(arena)->page_array) && \
@@ -44,7 +46,7 @@ static struct list_node arena_list = LIST_INITIAL_VALUE(arena_list);
     (paddr_t)(((uintptr_t)page - (uintptr_t)a->page_array) / sizeof(vm_page_t)) * PAGE_SIZE + a->base;
 
 #define ADDRESS_IN_ARENA(address, arena) \
-    ((address) >= (arena)->base && (address) <= (arena)->base + (arena)->size)
+    ((address) >= (arena)->base && (address) <= (arena)->base + (arena)->size - 1)
 
 static inline bool page_is_free(const vm_page_t *page)
 {
@@ -76,7 +78,7 @@ vm_page_t *address_to_page(paddr_t addr)
 
 status_t pmm_add_arena(pmm_arena_t *arena)
 {
-    LTRACEF("arena %p name '%s' base 0x%lx size 0x%x\n", arena, arena->name, arena->base, arena->size);
+    LTRACEF("arena %p name '%s' base 0x%lx size 0x%zx\n", arena, arena->name, arena->base, arena->size);
 
     DEBUG_ASSERT(IS_PAGE_ALIGNED(arena->base));
     DEBUG_ASSERT(IS_PAGE_ALIGNED(arena->size));
@@ -119,7 +121,7 @@ done_add:
     return NO_ERROR;
 }
 
-uint pmm_alloc_pages(uint count, struct list_node *list)
+size_t pmm_alloc_pages(uint count, struct list_node *list)
 {
     LTRACEF("count %u\n", count);
 
@@ -129,6 +131,8 @@ uint pmm_alloc_pages(uint count, struct list_node *list)
     uint allocated = 0;
     if (count == 0)
         return 0;
+
+    mutex_acquire(&lock);
 
     /* walk the arenas in order, allocating as many pages as we can from each */
     pmm_arena_t *a;
@@ -148,10 +152,11 @@ uint pmm_alloc_pages(uint count, struct list_node *list)
     }
 
 done:
+    mutex_release(&lock);
     return allocated;
 }
 
-uint pmm_alloc_range(paddr_t address, uint count, struct list_node *list)
+size_t pmm_alloc_range(paddr_t address, uint count, struct list_node *list)
 {
     LTRACEF("address 0x%lx, count %u\n", address, count);
 
@@ -162,6 +167,8 @@ uint pmm_alloc_range(paddr_t address, uint count, struct list_node *list)
         return 0;
 
     address = ROUNDDOWN(address, PAGE_SIZE);
+
+    mutex_acquire(&lock);
 
     /* walk through the arenas, looking to see if the physical page belongs to it */
     pmm_arena_t *a;
@@ -192,14 +199,17 @@ uint pmm_alloc_range(paddr_t address, uint count, struct list_node *list)
             break;
     }
 
+    mutex_release(&lock);
     return allocated;
 }
 
-uint pmm_free(struct list_node *list)
+size_t pmm_free(struct list_node *list)
 {
     LTRACEF("list %p\n", list);
 
     DEBUG_ASSERT(list);
+
+    mutex_acquire(&lock);
 
     uint count = 0;
     while (!list_is_empty(list)) {
@@ -222,10 +232,11 @@ uint pmm_free(struct list_node *list)
         }
     }
 
+    mutex_release(&lock);
     return count;
 }
 
-uint pmm_free_page(vm_page_t *page)
+size_t pmm_free_page(vm_page_t *page)
 {
     struct list_node list;
     list_initialize(&list);
@@ -244,14 +255,36 @@ void *pmm_alloc_kpages(uint count, struct list_node *list)
 
 
     paddr_t pa;
-    uint alloc_count = pmm_alloc_contiguous(count, PAGE_SIZE_SHIFT, &pa, list);
+    size_t alloc_count = pmm_alloc_contiguous(count, PAGE_SIZE_SHIFT, &pa, list);
     if (alloc_count == 0)
         return NULL;
 
     return paddr_to_kvaddr(pa);
 }
 
-uint pmm_alloc_contiguous(uint count, uint8_t alignment_log2, paddr_t *pa, struct list_node *list)
+size_t pmm_free_kpages(void *_ptr, uint count)
+{
+    LTRACEF("ptr %p, count %u\n", _ptr, count);
+
+    uint8_t *ptr = (uint8_t *)_ptr;
+
+    struct list_node list;
+    list_initialize(&list);
+
+    while (count > 0) {
+        vm_page_t *p = address_to_page(kvaddr_to_paddr(ptr));
+        if (p) {
+            list_add_tail(&list, &p->node);
+        }
+
+        ptr += PAGE_SIZE;
+        count--;
+    }
+
+    return pmm_free(&list);
+}
+
+size_t pmm_alloc_contiguous(uint count, uint8_t alignment_log2, paddr_t *pa, struct list_node *list)
 {
     LTRACEF("count %u, align %u\n", count, alignment_log2);
 
@@ -259,6 +292,8 @@ uint pmm_alloc_contiguous(uint count, uint8_t alignment_log2, paddr_t *pa, struc
         return 0;
     if (alignment_log2 < PAGE_SIZE_SHIFT)
         alignment_log2 = PAGE_SIZE_SHIFT;
+
+    mutex_acquire(&lock);
 
     pmm_arena_t *a;
     list_for_every_entry(&arena_list, a, pmm_arena_t, node) {
@@ -270,14 +305,19 @@ uint pmm_alloc_contiguous(uint count, uint8_t alignment_log2, paddr_t *pa, struc
              * is not aligned on the same boundary requested.
              */
             paddr_t rounded_base = ROUNDUP(a->base, 1UL << alignment_log2);
-            if (rounded_base < a->base || rounded_base >= a->base + a->size)
+            if (rounded_base < a->base || rounded_base > a->base + a->size - 1)
                 continue;
 
             uint aligned_offset = (rounded_base - a->base) / PAGE_SIZE;
             uint start = aligned_offset;
             LTRACEF("starting search at aligned offset %u\n", start);
+            LTRACEF("arena base 0x%lx size %zu\n", a->base, a->size);
+
 retry:
-            while (start < a->size / PAGE_SIZE) {
+            /* search while we're still within the arena and have a chance of finding a slot
+               (start + count < end of arena) */
+            while ((start < a->size / PAGE_SIZE) &&
+                   ((start + count) <= a->size / PAGE_SIZE)) {
                 vm_page_t *p = &a->page_array[start];
                 for (uint i = 0; i < count; i++) {
                     if (p->flags & VM_PAGE_FLAG_NONFREE) {
@@ -310,10 +350,14 @@ retry:
                 if (pa)
                     *pa = a->base + start * PAGE_SIZE;
 
+                mutex_release(&lock);
+
                 return count;
             }
         }
     }
+
+    mutex_release(&lock);
 
     LTRACEF("couldn't find run\n");
     return 0;
@@ -326,7 +370,7 @@ static void dump_page(const vm_page_t *page)
 
 static void dump_arena(const pmm_arena_t *arena, bool dump_pages)
 {
-    printf("arena %p: name '%s' base 0x%lx size 0x%x priority %u flags 0x%x\n",
+    printf("arena %p: name '%s' base 0x%lx size 0x%zx priority %u flags 0x%x\n",
            arena, arena->name, arena->base, arena->size, arena->priority, arena->flags);
     printf("\tpage_array %p, free_count %zu\n",
            arena->page_array, arena->free_count);
@@ -439,8 +483,8 @@ usage:
         list_initialize(&list);
 
         paddr_t pa;
-        uint ret = pmm_alloc_contiguous(argv[2].u, argv[3].u, &pa, &list);
-        printf("pmm_alloc_contiguous returns %u, address 0x%lx\n", ret, pa);
+        size_t ret = pmm_alloc_contiguous(argv[2].u, argv[3].u, &pa, &list);
+        printf("pmm_alloc_contiguous returns %zu, address 0x%lx\n", ret, pa);
         printf("address %% align = 0x%lx\n", pa % argv[3].u);
 
         /* add the pages to the local allocated list */
@@ -449,8 +493,8 @@ usage:
             list_add_tail(&allocated, node);
         }
     } else if (!strcmp(argv[1].str, "free_alloced")) {
-        int err = pmm_free(&allocated);
-        printf("pmm_free returns %d\n", err);
+        size_t err = pmm_free(&allocated);
+        printf("pmm_free returns %zu\n", err);
     } else {
         printf("unknown command\n");
         goto usage;

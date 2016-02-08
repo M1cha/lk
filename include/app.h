@@ -24,6 +24,9 @@
 #define __APP_H
 
 #include <stddef.h>
+#include <compiler.h>
+
+__BEGIN_CDECLS;
 
 /* app support api */
 void apps_init(void); /* one time setup */
@@ -46,8 +49,11 @@ struct app_descriptor {
 	size_t stack_size;
 };
 
-#define APP_START(appname) struct app_descriptor _app_##appname __SECTION(".apps") = { .name = #appname,
+#define APP_START(appname) const struct app_descriptor _app_##appname __ALIGNED(sizeof(void *)) __SECTION(".apps") = { .name = #appname,
+
 #define APP_END };
+
+__END_CDECLS;
 
 #endif
 

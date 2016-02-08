@@ -28,19 +28,68 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <platform.h>
+#include <kernel/timer.h>
+#include <err.h>
 
 #if WITH_LIB_CONSOLE
+
+uint32_t str_ip_to_int(const char *s, size_t len)
+{
+    uint8_t ip[4] = { 0, 0, 0, 0 };
+    uint8_t pos = 0, i = 0;
+
+    while (pos < len) {
+        char c = s[pos];
+        if (c == '.') {
+            i++;
+        } else {
+            ip[i] *= 10;
+            ip[i] += c - '0';
+        }
+        pos++;
+    }
+
+    return IPV4_PACK(ip);
+}
+
+void arp_usage(void) {
+    printf("arp list                        print arp table\n");
+    printf("arp query <ipv4 address>        query arp address\n");
+}
+
+static int cmd_arp(int argc, const cmd_args *argv)
+{
+    const char *cmd;
+
+    if (argc == 1) {
+        arp_usage();
+        return -1;
+    }
+
+    cmd = argv[1].str;
+    if (argc == 2 && strncmp(cmd, "list", sizeof("list")) == 0) {
+        arp_cache_dump();
+    } else if (argc == 3 && strncmp(cmd, "query", sizeof("query")) == 0) {
+        const char *addr_s = argv[2].str;
+        uint32_t addr = str_ip_to_int(addr_s, strlen(addr_s));
+
+        arp_send_request(addr);
+    } else {
+        arp_usage();
+    }
+
+    return 0;
+}
+
 static int cmd_minip(int argc, const cmd_args *argv)
 {
-    static minip_fd_t fd = {IPV4(192, 168, 1, 1), 65456};
-
     if (argc == 1) {
 minip_usage:
         printf("minip commands\n");
         printf("mi [a]rp                        dump arp table\n");
-        printf("mi [c]onfig <ip addr> <port>    set default dest to <ip addr>:<port>\n");
         printf("mi [s]tatus                     print ip status\n");
-        printf("mi [t]est <cnt>                 send <cnt> test packets to the configured dest\n");
+        printf("mi [t]est [dest] [port] [cnt]   send <cnt> test packets to the dest:port\n");
     } else {
         switch(argv[1].str[0]) {
 
@@ -48,49 +97,6 @@ minip_usage:
                 arp_cache_dump();
                 break;
 
-            case 'c':
-                if (argc < 4)
-                    goto minip_usage;
-
-                int i = 0, pos = 0, len = strlen(argv[2].str);
-                memset(&fd, 0, sizeof(fd));
-                uint8_t ip[4] = { 0, 0, 0, 0 };
-
-                while (pos < len) {
-                    char c = argv[2].str[pos];
-                    if (c == '.') {
-                        i++;
-                    } else {
-                        ip[i] *= 10;
-                        ip[i] += c - '0';
-                    }
-                    pos++;
-                }
-                memcpy(&fd.addr, ip, 4);
-                fd.port = argv[3].u;
-
-                if (arp_cache_lookup(fd.addr) == NULL) {
-                    send_arp_request(fd.addr);
-                }
-
-                printf("new config: %u.%u.%u.%u:%u\n",
-                       ip[0], ip[1], ip[2], ip[3], fd.port);
-                break;
-
-            case 'l': {
-                uint32_t buf[256];
-                uint32_t wait = 0;
-                memset(buf, 0x00, sizeof(buf));
-                wait = argv[2].u;
-
-                while (1) {
-                    send(&fd, buf, sizeof(buf), 0);
-                    if (wait > 0) {
-                        thread_sleep(wait);
-                    }
-                }
-            }
-            break;
             case 's': {
                 uint32_t ipaddr = minip_get_ipaddr();
 
@@ -99,25 +105,59 @@ minip_usage:
             }
             break;
             case 't': {
-                uint8_t buf[256];
-                uint32_t c = 1;
-                if (argc > 2) {
-                    c = argv[2].u;
+                uint32_t count = 1;
+                uint32_t host = 0x0100000A; // 10.0.0.1
+                uint32_t port = 1025;
+                udp_socket_t *handle;
+
+                switch (argc) {
+                    case 5:
+                        count = argv[4].u;
+                    case 4:
+                        port = argv[3].u;
+                    case 3:
+                        host = str_ip_to_int(argv[2].str, strlen(argv[2].str));
+                        break;
                 }
 
-                memset(buf, 0x00, sizeof(buf));
-                printf("sending %u packet(s)\n", c);
+                if (udp_open(host, port, port, &handle) != NO_ERROR) {
+                    printf("udp_open to %u.%u.%u.%u:%u failed\n", IPV4_SPLIT(host), port);
+                    return -1;
+                }
 
+#define BUFSIZE 1470
+                uint8_t *buf;
+
+                buf = malloc(BUFSIZE);
+                if (!buf) {
+                    udp_close(handle);
+                    return -1;
+                }
+
+                memset(buf, 0x00, BUFSIZE);
+                printf("sending %u packet(s) to %u.%u.%u.%u:%u\n", count, IPV4_SPLIT(host), port);
+
+                lk_time_t t = current_time();
                 uint32_t failures = 0;
-                while (c--) {
-                    buf[255] = c;
-                    if (send(&fd, buf, sizeof(buf), 0) != 0) {
+                for (uint32_t i = 0; i < count; i++) {
+                    if (udp_send(buf, BUFSIZE, handle) != 0) {
                         failures++;
                     }
+                    buf[128]++;
                 }
+                t = current_time() - t;
                 printf("%d pkts failed\n", failures);
+                uint64_t total_count = (uint64_t)count * BUFSIZE;
+                printf("wrote %llu bytes in %u msecs (%llu bytes/sec)\n",
+                    total_count, (uint32_t)t, total_count * 1000 / t);
+
+                free(buf);
+                udp_close(handle);
+#undef BUFSIZE
             }
             break;
+        default:
+            goto minip_usage;
         }
     }
 
@@ -125,6 +165,7 @@ minip_usage:
 }
 
 STATIC_COMMAND_START
+STATIC_COMMAND("arp", "arp commands", &cmd_arp)
 STATIC_COMMAND("mi", "minip commands", &cmd_minip)
 STATIC_COMMAND_END(minip);
 #endif

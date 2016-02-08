@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 Travis Geiselbrecht
+ * Copyright (c) 2012-2015 Travis Geiselbrecht
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files
@@ -30,11 +30,24 @@
 #include <dev/interrupt/arm_gic.h>
 #include <dev/timer/arm_cortex_a9.h>
 #include <lib/console.h>
+#include <lib/watchdog.h>
 #include <platform.h>
 #include <platform/zynq.h>
 #include <platform/gem.h>
 #include <platform/timer.h>
 #include "platform_p.h"
+
+#if ZYNQ_SDRAM_INIT
+STATIC_ASSERT(SDRAM_SIZE != 0);
+#endif
+
+/* default timeout of the global hardware watchdog */
+#ifndef ZYNQ_WATCHDOG_TIMEOUT
+#define ZYNQ_WATCHDOG_TIMEOUT (1000) // 1 second
+#endif
+
+/* saved REBOOT_STATUS register */
+static uint32_t saved_reboot_status;
 
 /* target can specify this as the initial jam table to set up the soc */
 __WEAK void ps7_init(void) { }
@@ -46,7 +59,6 @@ extern const uint32_t zynq_ddr_cfg_cnt;
 extern const zynq_pll_cfg_tree_t zynq_pll_cfg;
 extern const zynq_clk_cfg_t zynq_clk_cfg;
 extern const zynq_ddriob_cfg_t zynq_ddriob_cfg;
-
 
 static inline int reg_poll(uint32_t addr,uint32_t mask)
 {
@@ -91,6 +103,10 @@ int zynq_pll_init(void) {
 
     SLCR_REG(DDR_PLL_CTRL) &= ~PLL_BYPASS_FORCE;
     SLCR_REG(DDR_CLK_CTRL) = zynq_clk_cfg.ddr_clk;
+#elif SDRAM_SIZE == 0
+    /* if we're not using sdram and haven't been told to initialize sdram, stop the DDR pll */
+    SLCR_REG(DDR_CLK_CTRL) = 0;
+    SLCR_REG(DDR_PLL_CTRL) |= PLL_PWRDOWN;
 #endif
     SLCR_REG(IO_PLL_CFG)  = PLL_CFG_LOCK_CNT(cfg->io.lock_cnt) | PLL_CFG_PLL_CP(cfg->io.cp) |
                                 PLL_CFG_PLL_RES(cfg->io.res);
@@ -115,7 +131,7 @@ int zynq_mio_init(void)
     SLCR_REG(GPIOB_CTRL) = GPIOB_CTRL_VREF_EN;
 
     for (size_t pin = 0; pin < countof(zynq_mio_cfg); pin++) {
-        if (zynq_mio_cfg[pin] != 0) {
+        if (zynq_mio_cfg[pin] != MIO_DEFAULT) {
             SLCR_REG(MIO_PIN_00 + (pin * 4)) = zynq_mio_cfg[pin];
         }
     }
@@ -132,9 +148,15 @@ void zynq_clk_init(void)
     SLCR_REG(GEM0_RCLK_CTRL) = zynq_clk_cfg.gem0_rclk;
     SLCR_REG(GEM1_CLK_CTRL)  = zynq_clk_cfg.gem1_clk;
     SLCR_REG(GEM1_RCLK_CTRL) = zynq_clk_cfg.gem1_rclk;
+    SLCR_REG(SMC_CLK_CTRL)   = zynq_clk_cfg.smc_clk;
     SLCR_REG(LQSPI_CLK_CTRL) = zynq_clk_cfg.lqspi_clk;
     SLCR_REG(SDIO_CLK_CTRL)  = zynq_clk_cfg.sdio_clk;
     SLCR_REG(UART_CLK_CTRL)  = zynq_clk_cfg.uart_clk;
+    SLCR_REG(SPI_CLK_CTRL)   = zynq_clk_cfg.spi_clk;
+    SLCR_REG(CAN_CLK_CTRL)   = zynq_clk_cfg.can_clk;
+    SLCR_REG(CAN_MIOCLK_CTRL)= zynq_clk_cfg.can_mioclk;
+    SLCR_REG(USB0_CLK_CTRL)  = zynq_clk_cfg.usb0_clk;
+    SLCR_REG(USB1_CLK_CTRL)  = zynq_clk_cfg.usb1_clk;
     SLCR_REG(PCAP_CLK_CTRL)  = zynq_clk_cfg.pcap_clk;
     SLCR_REG(FPGA0_CLK_CTRL) = zynq_clk_cfg.fpga0_clk;
     SLCR_REG(FPGA1_CLK_CTRL) = zynq_clk_cfg.fpga1_clk;
@@ -144,9 +166,9 @@ void zynq_clk_init(void)
     SLCR_REG(CLK_621_TRUE)   = zynq_clk_cfg.clk_621_true;
 }
 
+#if ZYNQ_SDRAM_INIT
 void zynq_ddr_init(void)
 {
-#ifdef ZYNQ_SDRAM_INIT
     SLCR_REG(DDRIOB_ADDR0) = zynq_ddriob_cfg.addr0;
     SLCR_REG(DDRIOB_ADDR1) = zynq_ddriob_cfg.addr1;
     SLCR_REG(DDRIOB_DATA0) = zynq_ddriob_cfg.data0;
@@ -166,7 +188,6 @@ void zynq_ddr_init(void)
     SLCR_REG(DDRIOB_DCI_CTRL) = 0x00000001U;
     SLCR_REG(DDRIOB_DCI_CTRL) |= 0x00000020U;
     SLCR_REG(DDRIOB_DCI_CTRL) |= 0x00000823U;
-#endif
 
     /* Write addresss / value pairs from target table */
     for (size_t i = 0; i < zynq_ddr_cfg_cnt; i += 2) {
@@ -197,6 +218,7 @@ void zynq_ddr_init(void)
         SLCR_REG(DDRIOB_DIFF1) |= DDRIOB_TERM_DISABLE_MODE;
     }
 }
+#endif
 
 STATIC_ASSERT(IS_ALIGNED(SDRAM_BASE, MB));
 STATIC_ASSERT(IS_ALIGNED(SDRAM_SIZE, MB));
@@ -258,6 +280,12 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
       .flags = MMU_INITIAL_MAPPING_FLAG_DEVICE,
       .name = "hw-fc000000" },
 
+    /* sram high aperture */
+    { .phys = 0xfff00000,
+      .virt = 0xfff00000,
+      .size = 0x00100000,
+      .flags = MMU_INITIAL_MAPPING_FLAG_DEVICE },
+
     /* identity map to let the boot code run */
     { .phys = SRAM_BASE,
       .virt = SRAM_BASE,
@@ -291,10 +319,10 @@ void platform_init_mmu_mappings(void)
 
 void platform_early_init(void)
 {
-    /* Unlock the registers and leave them that way */
 #if 0
     ps7_init();
 #else
+    /* Unlock the registers and leave them that way */
     zynq_slcr_unlock();
     zynq_mio_init();
     zynq_pll_init();
@@ -312,15 +340,61 @@ void platform_early_init(void)
     /* zynq manual says this is mandatory for cache init */
     *REG32(SLCR_BASE + 0xa1c) = 0x020202;
 
+    /* save the reboot status register, clear bits we dont want to save */
+    saved_reboot_status = SLCR->REBOOT_STATUS;
+    SLCR->REBOOT_STATUS &= ~(0xff << 16);
 
     /* early initialize the uart so we can printf */
     uart_init_early();
 
     /* initialize the interrupt controller */
     arm_gic_init();
+    zynq_gpio_init();
 
     /* initialize the timer block */
     arm_cortex_a9_timer_init(CPUPRIV_BASE, zynq_get_arm_timer_freq());
+
+    /* initialize the hardware watchdog */
+    watchdog_hw_init(ZYNQ_WATCHDOG_TIMEOUT);
+
+    /* bump the 2nd cpu into our code space and remap the top SRAM block */
+    if (KERNEL_LOAD_OFFSET != 0) {
+        /* construct a trampoline to get the 2nd cpu up to the trap routine */
+
+        /* figure out the offset of the trampoline routine in physical space from address 0 */
+        extern void platform_reset(void);
+        addr_t tramp = (addr_t)&platform_reset;
+        tramp -= KERNEL_BASE;
+        tramp += MEMBASE;
+
+        /* stuff in a ldr pc, [nextaddrress], and a target address */
+        uint32_t *ptr = (uint32_t *)KERNEL_BASE;
+
+        ptr[0] = 0xe51ff004; // ldr pc, [pc, #-4]
+        ptr[1] = tramp;
+        arch_clean_invalidate_cache_range((addr_t)ptr, 8);
+    }
+
+    /* reset the 2nd cpu, letting it go through its reset vector (at 0x0 physical) */
+    SLCR_REG(A9_CPU_RST_CTRL) |= (1<<1); // reset cpu 1
+    spin(10);
+    SLCR_REG(A9_CPU_RST_CTRL) &= ~(1<<1); // unreset cpu 1
+
+    /* wait for the 2nd cpu to reset, go through the usual reset vector, and get trapped by our code */
+    /* see platform/zynq/reset.S */
+    extern volatile int __cpu_trapped;
+    uint count = 100000;
+    while (--count) {
+        arch_clean_invalidate_cache_range((addr_t)&__cpu_trapped, sizeof(__cpu_trapped));
+        if (__cpu_trapped != 0)
+            break;
+    }
+    if (count == 0) {
+        panic("ZYNQ: failed to trap 2nd cpu\n");
+    }
+
+    /* bounce the 4th sram region down to lower address */
+    SLCR_REG(OCM_CFG) &= ~0xf; /* all banks at low address */
 
     /* add the main memory arena */
 #if !ZYNQ_CODE_IN_SDRAM && SDRAM_SIZE != 0
@@ -346,62 +420,109 @@ void platform_init(void)
     uart_init();
 
     /* enable if we want to see some hardware boot status */
-#if 0
+#if LK_DEBUGLEVEL > 0
     printf("zynq boot status:\n");
-    printf("\tREBOOT_STATUS 0x%x\n", SLCR_REG(REBOOT_STATUS));
-    printf("\tBOOT_MODE 0x%x\n", SLCR_REG(BOOT_MODE));
-
-    zynq_dump_clocks();
+    printf("\tREBOOT_STATUS 0x%x\n", saved_reboot_status);
+    if (BIT(saved_reboot_status, 16)) printf("\t\tSWDT_RST\n");
+    if (BIT(saved_reboot_status, 17)) printf("\t\tAWDT0_RST\n");
+    if (BIT(saved_reboot_status, 18)) printf("\t\tAWDT1_RST\n");
+    if (BIT(saved_reboot_status, 19)) printf("\t\tSLC_RST\n");
+    if (BIT(saved_reboot_status, 20)) printf("\t\tDBG_RST\n");
+    if (BIT(saved_reboot_status, 21)) printf("\t\tSRST_B\n");
+    if (BIT(saved_reboot_status, 22)) printf("\t\tPOR\n");
+    printf("\tREBOOT_STATE 0x%lx\n", BITS_SHIFT(saved_reboot_status, 31, 24));
+    printf("\tboot mode 0x%x\n", zynq_get_boot_mode());
 #endif
 }
 
 void platform_quiesce(void)
 {
+#if ZYNQ_WITH_GEM_ETH
     gem_disable();
+#endif
 
     platform_stop_timer();
+
+    /* stop the 2nd cpu and hold in reset */
+    SLCR_REG(A9_CPU_RST_CTRL) |= (1<<1); // reset cpu 1
+}
+
+/* called from lkboot to see if we want to abort autobooting.
+ * having the BOOT_MODE pins set to JTAG should cause us to hang out in
+ * whatever binary is loaded at the time.
+ */
+bool platform_abort_autoboot(void)
+{
+    /* test BOOT_MODE pins to see if we want to skip the autoboot stuff */
+    uint32_t boot_mode = zynq_get_boot_mode();
+    if (boot_mode == ZYNQ_BOOT_MODE_JTAG) {
+        printf("ZYNQ: disabling autoboot due to JTAG/QSPI jumper being set to JTAG\n");
+        return true;
+    }
+
+    return false;
 }
 
 #if WITH_LIB_CONSOLE
-static int cmd_mio(int argc, const cmd_args *argv)
+static int cmd_zynq(int argc, const cmd_args *argv)
 {
-    printf("zynq mio:\n");
-    for (size_t i = 0; i < ZYNQ_MIO_CNT; i++) {
-        printf("\t%02u: 0x%08x", i, *REG32((uintptr_t)&SLCR->MIO_PIN_00 + (i * 4)));
-        if (i % 4 == 3 || i == 53) {
-            putchar('\n');
+    if (argc < 2) {
+notenoughargs:
+        printf("not enough arguments\n");
+usage:
+        printf("usage: %s <command>\n", argv[0].str);
+        printf("\tslcr lock\n");
+        printf("\tslcr unlock\n");
+        printf("\tslcr lockstatus\n");
+        printf("\tmio\n");
+        printf("\tclocks\n");
+        printf("\ttrip_watchdog\n");
+        return -1;
+    }
+
+    if (!strcmp(argv[1].str, "slcr")) {
+        if (argc < 3) goto notenoughargs;
+
+        bool print_lock_status = false;
+        if (!strcmp(argv[2].str, "lock")) {
+            zynq_slcr_lock();
+            print_lock_status = true;
+        } else if (!strcmp(argv[2].str, "unlock")) {
+            zynq_slcr_unlock();
+            print_lock_status = true;
+        } else if (print_lock_status || !strcmp(argv[2].str, "lockstatus")) {
+            printf("%s\n", (SLCR->SLCR_LOCKSTA & 0x1) ? "locked" : "unlocked");
+        } else {
+            goto usage;
         }
+    } else if (!strcmp(argv[1].str, "mio")) {
+        printf("zynq mio:\n");
+        for (size_t i = 0; i < ZYNQ_MIO_CNT; i++) {
+            printf("\t%02u: 0x%08x", i, *REG32((uintptr_t)&SLCR->MIO_PIN_00 + (i * 4)));
+            if (i % 4 == 3 || i == 53) {
+                putchar('\n');
+            }
+        }
+    } else if (!strcmp(argv[1].str, "clocks")) {
+        zynq_dump_clocks();
+    } else if (!strcmp(argv[1].str, "trip_watchdog")) {
+        /* try to trip the watchdog by disabling interrupts for a while */
+        arch_disable_ints();
+        for (int i = 0; i < 20; i++) {
+            spin(250000);
+            printf("SWDT MODE 0x%x CONTROL 0x%x STATUS 0x%x\n", SWDT->MODE, SWDT->CONTROL, SWDT->STATUS);
+        }
+        arch_enable_ints();
+    } else {
+        goto usage;
     }
 
     return 0;
 }
 
-#define DSR(x) printf("%30s (0x%08lx): 0x%08x\n", #x, (uintptr_t)&SLCR_REG(x), SLCR_REG(x));
-static int cmd_slcr(int argc, const cmd_args *argv)
-{
-    if (argc == 2) {
-        bool print_lock_status = false;
-        if (!strcmp(argv[1].str, "lock")) {
-            zynq_slcr_lock();
-            print_lock_status = true;
-        } else if (!strcmp(argv[1].str, "unlock")) {
-            zynq_slcr_unlock();
-            print_lock_status = true;
-        } else if (print_lock_status || !strcmp(argv[1].str, "lockstatus")) {
-            printf("%s\n", (SLCR->SLCR_LOCKSTA & 0x1) ? "locked" : "unlocked");
-        }
-    } else {
-        printf("slcr lock:        lock the SCL registers\n");
-        printf("slcr unlock:      unlock the SCL registers\n");
-        printf("slcr lockstatus:  print the SCL lock status\n");
-     }
-
-    return 0;
-}
-#undef DSR
-
 STATIC_COMMAND_START
-STATIC_COMMAND("mio", "print mio configuration", &cmd_mio)
-STATIC_COMMAND("slcr", "slcr commands", &cmd_slcr)
-STATIC_COMMAND_END(mio);
+#if LK_DEBUGLEVEL > 1
+STATIC_COMMAND("zynq", "zynq configuration commands", &cmd_zynq)
+#endif
+STATIC_COMMAND_END(zynq);
 #endif // WITH_LIB_CONSOLE

@@ -48,8 +48,23 @@ static struct {
 };
 
 void usage(const char *binary) {
+	unsigned n;
 	fprintf(stderr, "usage:\n");
-	fprintf(stderr, "%s [-h] [-o <output file] section:file ...\n", binary);
+	fprintf(stderr, "%s [-h] [-o <output file] section:file ...\n\n", binary);
+
+	fprintf(stderr, "Supported section types:\n");
+	for (n = 0; types[n].cmd != NULL; n++) {
+		if (types[n].kind == KIND_FILE) {
+			fprintf(stderr, "\t%s\n", types[n].cmd);
+		}
+	}
+
+	fprintf(stderr, "\nSupported string types:\n");
+	for (n = 0; types[n].cmd != NULL; n++) {
+		if (types[n].kind != KIND_FILE) {
+			fprintf(stderr, "\t%s\n", types[n].cmd);
+		}
+	}
 }
 
 int process(bootimage *img, char *cmd, char *arg) {
@@ -93,7 +108,7 @@ int main(int argc, char **argv) {
 			usage(binary);
 			return 1;
 		} else if (!strcmp(cmd, "-o")) {
-			outname = argv[2];
+			outname = argv[1];
 			argc--;
 			argv++;
 		} else {
@@ -119,7 +134,7 @@ int main(int argc, char **argv) {
 	bootimage_done(img);
 
 	if ((fd = open(outname, O_CREAT|O_TRUNC|O_WRONLY, 0644)) < 0) {
-		fprintf(stderr, "error; cannot open '%s' for writing\n", outname);
+		fprintf(stderr, "error: cannot open '%s' for writing\n", outname);
 		return 1;
 	}
 	if (bootimage_write(img, fd)) {

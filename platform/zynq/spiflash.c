@@ -31,6 +31,7 @@
 #include <string.h>
 #include <rand.h>
 #include <reg.h>
+#include <pow2.h>
 
 #include <lib/bio.h>
 #include <lib/console.h>
@@ -52,11 +53,14 @@
 #define STS_ERASE_ERR (1<<5)
 #define STS_BUSY (1<<0)
 
+#define MAX_GEOMETRY_COUNT (2)
+
 struct spi_flash {
 	bool detected;
 
 	struct qspi_ctxt qspi;
 	bdev_t bdev;
+	bio_erase_geometry_info_t geometry[MAX_GEOMETRY_COUNT];
 
 	off_t size;
 };
@@ -67,6 +71,7 @@ static ssize_t spiflash_bdev_read(struct bdev *, void *buf, off_t offset, size_t
 static ssize_t spiflash_bdev_read_block(struct bdev *, void *buf, bnum_t block, uint count);
 static ssize_t spiflash_bdev_write_block(struct bdev *, const void *buf, bnum_t block, uint count);
 static ssize_t spiflash_bdev_erase(struct bdev *, off_t offset, size_t len);
+static int spiflash_ioctl(struct bdev *, int request, void *argp);
 
 // adjust 24 bit address to be correct-byte-order for 32bit qspi commands
 static uint32_t qspi_fix_addr(uint32_t addr)
@@ -249,6 +254,41 @@ status_t spiflash_detect(void)
 		goto nodetect;
 	}
 
+	/* Fill out our geometry info based on the CFI */
+	size_t region_count = buf[0x2C];
+	if (region_count > countof(flash.geometry)) {
+		TRACEF("erase region count (%zu) exceeds max allowed (%zu)\n",
+			   region_count, countof(flash.geometry));
+		goto nodetect;
+	}
+
+	size_t offset = 0;
+	for (size_t i = 0; i < region_count; i++) {
+		const uint8_t* info = buf + 0x2D + (i << 2);
+		size_t pages      = ((((size_t)info[1]) << 8) | info[0]) + 1;
+		size_t erase_size = ((((size_t)info[3]) << 8) | info[2]) << 8;
+
+		if (!ispow2(erase_size)) {
+			TRACEF("Region %zu page size (%zu) is not a power of 2\n",
+					i, erase_size);
+			goto nodetect;
+		}
+
+		flash.geometry[i].erase_size  = erase_size;
+		flash.geometry[i].erase_shift = log2_uint(erase_size);
+		flash.geometry[i].start       = offset;
+		flash.geometry[i].size        = pages << flash.geometry[i].erase_shift;
+
+		size_t erase_mask = ((size_t)0x1 << flash.geometry[i].erase_shift) - 1;
+		if (offset & erase_mask) {
+			TRACEF("Region %zu not aligned to erase boundary (start %zu, erase size %zu)\n",
+					i, offset, erase_size);
+			goto nodetect;
+		}
+
+		offset += flash.geometry[i].size;
+	}
+
 	free(buf);
 
 	/* read the 16 byte random number out of the OTP area and add to the rand entropy pool */
@@ -256,7 +296,7 @@ status_t spiflash_detect(void)
 	memset(r, 0, sizeof(r));
 	spiflash_read_otp(r, 0, 16);
 
-	TRACEF("OTP random %08x%08x%08x%08x\n", r[0], r[1], r[2], r[3]);
+	LTRACEF("OTP random %08x%08x%08x%08x\n", r[0], r[1], r[2], r[3]);
 	rand_add_entropy(r, sizeof(r));
 
 	flash.detected = true;
@@ -269,7 +309,9 @@ status_t spiflash_detect(void)
 	}
 
 	/* construct the block device */
-	bio_initialize_bdev(&flash.bdev, "spi0", PAGE_PROGRAM_SIZE, flash.size / PAGE_PROGRAM_SIZE);
+	bio_initialize_bdev(&flash.bdev, "spi0",
+						PAGE_PROGRAM_SIZE, flash.size / PAGE_PROGRAM_SIZE,
+						region_count, flash.geometry, BIO_FLAGS_NONE);
 
 	/* override our block device hooks */
 	flash.bdev.read = &spiflash_bdev_read;
@@ -277,6 +319,10 @@ status_t spiflash_detect(void)
 	// flash.bdev.write has a default hook that will be okay
 	flash.bdev.write_block = &spiflash_bdev_write_block;
 	flash.bdev.erase = &spiflash_bdev_erase;
+	flash.bdev.ioctl = &spiflash_ioctl;
+
+	/* we erase to 0xff */
+	flash.bdev.erase_byte = 0xff;
 
 	bio_register_device(&flash.bdev);
 
@@ -369,6 +415,31 @@ static ssize_t spiflash_bdev_erase(struct bdev *bdev, off_t offset, size_t len)
 	return erased;
 }
 
+static int spiflash_ioctl(struct bdev *bdev, int request, void *argp)
+{
+	LTRACEF("dev %p, request %d, argp %p\n", bdev, request, argp);
+
+	int ret = NO_ERROR;
+	switch (request) {
+		case BIO_IOCTL_GET_MEM_MAP:
+			/* put the device into linear mode */
+			ret = qspi_enable_linear(&flash.qspi);
+			// Fallthrough.
+		case BIO_IOCTL_GET_MAP_ADDR:
+			if (argp)
+				*(void **)argp = (void *)QSPI_LINEAR_BASE;
+			break;
+		case BIO_IOCTL_PUT_MEM_MAP:
+			/* put the device back into regular mode */
+			ret = qspi_disable_linear(&flash.qspi);
+			break;
+		default:
+			ret = ERR_NOT_SUPPORTED;
+	}
+
+	return ret;
+}
+
 // debug tests
 int cmd_spiflash(int argc, const cmd_args *argv)
 {
@@ -377,17 +448,21 @@ notenoughargs:
 		printf("not enough arguments\n");
 usage:
 		printf("usage:\n");
+#if LK_DEBUGLEVEL > 1
 		printf("\t%s detect\n", argv[0].str);
 		printf("\t%s cfi\n", argv[0].str);
 		printf("\t%s cr1\n", argv[0].str);
 		printf("\t%s otp\n", argv[0].str);
+		printf("\t%s linear [true/false]\n", argv[0].str);
 		printf("\t%s read <offset> <length>\n", argv[0].str);
 		printf("\t%s write <offset> <length> <address>\n", argv[0].str);
 		printf("\t%s erase <offset>\n", argv[0].str);
+#endif
 		printf("\t%s setquad (dangerous)\n", argv[0].str);
 		return ERR_INVALID_ARGS;
 	}
 
+#if LK_DEBUGLEVEL > 1
 	if (!strcmp(argv[1].str, "detect")) {
 		spiflash_detect();
 	} else if (!strcmp(argv[1].str, "cr1")) {
@@ -424,6 +499,17 @@ usage:
 		hexdump8(buf, len);
 
 		free(buf);
+	} else if (!strcmp(argv[1].str, "linear")) {
+		if (argc < 3) goto notenoughargs;
+		if (!flash.detected) {
+			printf("flash not detected\n");
+			return -1;
+		}
+
+		if (argv[2].b)
+			qspi_enable_linear(&flash.qspi);
+		else
+			qspi_disable_linear(&flash.qspi);
 	} else if (!strcmp(argv[1].str, "read")) {
 		if (argc < 4) goto notenoughargs;
 		if (!flash.detected) {
@@ -444,7 +530,7 @@ usage:
 			return -1;
 		}
 
-		status_t err = qspi_write_page(&flash.qspi, argv[2].u, (void *)argv[4].u);
+		status_t err = qspi_write_page(&flash.qspi, argv[2].u, argv[4].p);
 		printf("write_page returns %d\n", err);
 	} else if (!strcmp(argv[1].str, "erase")) {
 		if (argc < 3) goto notenoughargs;
@@ -455,7 +541,9 @@ usage:
 
 		status_t err = qspi_erase_sector(&flash.qspi, argv[2].u);
 		printf("erase returns %d\n", err);
-	} else if (!strcmp(argv[1].str, "setquad")) {
+	} else
+#endif
+	if (!strcmp(argv[1].str, "setquad")) {
 		if (!flash.detected) {
 			printf("flash not detected\n");
 			return -1;

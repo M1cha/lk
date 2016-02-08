@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2012 Travis Geiselbrecht
+ * Copyright (c) 2008-2015 Travis Geiselbrecht
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files
@@ -24,6 +24,8 @@
 #include <trace.h>
 #include <rand.h>
 #include <err.h>
+#include <assert.h>
+#include <string.h>
 #include <app/tests.h>
 #include <kernel/thread.h>
 #include <kernel/mutex.h>
@@ -130,7 +132,7 @@ static int semaphore_test(void)
 static int mutex_thread(void *arg)
 {
 	int i;
-	const int iterations = 50000;
+	const int iterations = 1000000;
 
 	static volatile int shared = 0;
 
@@ -405,9 +407,11 @@ static int atomic_tester(void *arg)
 	int add = (intptr_t)arg;
 	int i;
 
-	TRACEF("add %d\n", add);
+	const int iter = 10000000;
 
-	for (i=0; i < 1000000; i++) {
+	TRACEF("add %d, %d iterations\n", add, iter);
+
+	for (i=0; i < iter; i++) {
 		atomic_add(&atomic, add);
 	}
 
@@ -455,6 +459,7 @@ static int preempt_tester(void *arg)
 	printf("exiting ts %lld\n", current_time_hires());
 
 	atomic_add(&preempt_count, -1);
+#undef COUNT
 
 	return 0;
 }
@@ -497,18 +502,163 @@ static void preempt_test(void)
 	printf("done with real-time preempt test, above time stamps should be 1 second apart\n");
 }
 
+static int join_tester(void *arg)
+{
+	long val = (long)arg;
+
+	printf("\t\tjoin tester starting\n");
+	thread_sleep(500);
+	printf("\t\tjoin tester exiting with result %ld\n", val);
+
+	return val;
+}
+
+static int join_tester_server(void *arg)
+{
+	int ret;
+	status_t err;
+	thread_t *t;
+
+	printf("\ttesting thread_join/thread_detach\n");
+
+	printf("\tcreating and waiting on thread to exit with thread_join\n");
+	t = thread_create("join tester", &join_tester, (void *)1, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	thread_resume(t);
+	ret = 99;
+	printf("\tthread magic is 0x%x (should be 0x%x)\n", t->magic, THREAD_MAGIC);
+	err = thread_join(t, &ret, INFINITE_TIME);
+	printf("\tthread_join returns err %d, retval %d\n", err, ret);
+	printf("\tthread magic is 0x%x (should be 0)\n", t->magic);
+
+	printf("\tcreating and waiting on thread to exit with thread_join, after thread has exited\n");
+	t = thread_create("join tester", &join_tester, (void *)2, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	thread_resume(t);
+	thread_sleep(1000); // wait until thread is already dead
+	ret = 99;
+	printf("\tthread magic is 0x%x (should be 0x%x)\n", t->magic, THREAD_MAGIC);
+	err = thread_join(t, &ret, INFINITE_TIME);
+	printf("\tthread_join returns err %d, retval %d\n", err, ret);
+	printf("\tthread magic is 0x%x (should be 0)\n", t->magic);
+
+	printf("\tcreating a thread, detaching it, let it exit on its own\n");
+	t = thread_create("join tester", &join_tester, (void *)3, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	thread_detach(t);
+	thread_resume(t);
+	thread_sleep(1000); // wait until the thread should be dead
+	printf("\tthread magic is 0x%x (should be 0)\n", t->magic);
+
+	printf("\tcreating a thread, detaching it after it should be dead\n");
+	t = thread_create("join tester", &join_tester, (void *)4, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	thread_resume(t);
+	thread_sleep(1000); // wait until thread is already dead
+	printf("\tthread magic is 0x%x (should be 0x%x)\n", t->magic, THREAD_MAGIC);
+	thread_detach(t);
+	printf("\tthread magic is 0x%x\n", t->magic);
+
+	printf("\texiting join tester server\n");
+
+	return 55;
+}
+
+static void join_test(void)
+{
+	int ret;
+	status_t err;
+	thread_t *t;
+
+	printf("testing thread_join/thread_detach\n");
+
+	printf("creating thread join server thread\n");
+	t = thread_create("join tester server", &join_tester_server, (void *)1, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	thread_resume(t);
+	ret = 99;
+	err = thread_join(t, &ret, INFINITE_TIME);
+	printf("thread_join returns err %d, retval %d (should be 0 and 55)\n", err, ret);
+}
+
+static void spinlock_test(void)
+{
+    spin_lock_saved_state_t state;
+    spin_lock_t lock;
+
+    spin_lock_init(&lock);
+
+    // verify basic functionality (single core)
+    printf("testing spinlock:\n");
+    ASSERT(!spin_lock_held(&lock));
+    ASSERT(!arch_ints_disabled());
+    spin_lock_irqsave(&lock, state);
+    ASSERT(arch_ints_disabled());
+    ASSERT(spin_lock_held(&lock));
+    spin_unlock_irqrestore(&lock, state);
+    ASSERT(!spin_lock_held(&lock));
+    ASSERT(!arch_ints_disabled());
+    printf("seems to work\n");
+
+#define COUNT (1024*1024)
+    uint32_t c = arch_cycle_count();
+    for (uint i = 0; i < COUNT; i++) {
+        spin_lock(&lock);
+        spin_unlock(&lock);
+    }
+    c = arch_cycle_count() - c;
+
+    printf("%u cycles to acquire/release lock %u times (%u cycles per)\n", c, COUNT, c / COUNT);
+
+    c = arch_cycle_count();
+    for (uint i = 0; i < COUNT; i++) {
+        spin_lock_irqsave(&lock, state);
+        spin_unlock_irqrestore(&lock, state);
+    }
+    c = arch_cycle_count() - c;
+
+    printf("%u cycles to acquire/release lock w/irqsave %u times (%u cycles per)\n", c, COUNT, c / COUNT);
+#undef COUNT
+}
+
 int thread_tests(void)
 {
 	mutex_test();
 	semaphore_test();
 	event_test();
 
+	spinlock_test();
 	atomic_test();
 
 	thread_sleep(200);
 	context_switch_test();
 
 	preempt_test();
+
+	join_test();
+
+	return 0;
+}
+
+static int spinner_thread(void *arg)
+{
+	for (;;)
+		;
+
+	return 0;
+}
+
+int spinner(int argc, const cmd_args *argv)
+{
+	if (argc < 2) {
+		printf("not enough args\n");
+		printf("usage: %s <priority> <rt>\n", argv[0].str);
+		return -1;
+	}
+
+	thread_t *t = thread_create("spinner", spinner_thread, NULL, argv[1].u, DEFAULT_STACK_SIZE);
+	if (!t)
+		return ERR_NO_MEMORY;
+
+	if (argc >= 3 && !strcmp(argv[2].str, "rt")) {
+		thread_set_real_time(t);
+	}
+	thread_resume(t);
 
 	return 0;
 }

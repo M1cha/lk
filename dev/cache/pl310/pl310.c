@@ -26,6 +26,7 @@
 #include <trace.h>
 #include <err.h>
 #include <reg.h>
+#include <stdlib.h>
 #include <arch.h>
 #include <arch/arm/mmu.h>
 #include <dev/cache/pl310_config.h>
@@ -103,6 +104,10 @@ static void pl310_init(uint level)
     PL310_REG(REG1_TAG_RAM_CONTROL) = PL310_TAG_RAM_LATENCY;
     PL310_REG(REG1_DATA_RAM_CONTROL) = PL310_DATA_RAM_LATENCY;
 
+    /* configure */
+    /* early BRESP enable, instruction/data prefetch, exclusive cache, full line of zero */
+    PL310_REG(REG1_AUX_CONTROL) |= (1<<30)|(1<<29)|(1<<28)|(1<<12)|(1<<0);
+
     /* flush all the ways */
     PL310_REG(REG7_INV_WAY) = 0xffff;
 }
@@ -119,6 +124,7 @@ status_t pl310_set_enable(bool enable)
     if (enable) {
         if ((PL310_REG(REG1_CONTROL) & 1) == 0) {
             /* if disabled */
+            pl310_invalidate();
             PL310_REG(REG1_CONTROL) = 1;
         }
     } else {
@@ -201,5 +207,28 @@ void pl310_invalidate_range(addr_t start, size_t len)
 {
     LTRACEF("start 0x%lx, len %zd\n", start, len);
     PL310_LOOP_BODY(REG7_INV_PA);
+}
+
+void pl310_pin_cache_range(addr_t start, size_t len)
+{
+    len = ROUNDUP(len, CACHE_LINE);
+
+    arch_disable_ints();
+
+    arch_clean_invalidate_cache_range(start, len);
+
+    PL310_REG(REG9_LOCK_LINE_EN) = 1;
+    DSB;
+
+    while (len > 0) {
+        asm volatile("pld [%0]" :: "r"(start) : "memory");
+        start += CACHE_LINE;
+        len -= CACHE_LINE;
+    }
+
+    DSB;
+    PL310_REG(REG9_LOCK_LINE_EN) = 0;
+
+    arch_enable_ints();
 }
 

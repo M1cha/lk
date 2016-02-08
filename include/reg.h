@@ -23,7 +23,7 @@
 #ifndef __REG_H
 #define __REG_H
 
-#include <sys/types.h>
+#include <stdint.h>
 
 /* low level macros for accessing memory mapped hardware registers */
 #define REG64(addr) ((volatile uint64_t *)(uintptr_t)(addr))
@@ -38,5 +38,7 @@
 
 #define writel(v, a) (*REG32(a) = (v))
 #define readl(a) (*REG32(a))
+#define writeb(v, a) (*REG8(a) = (v))
+#define readb(a) (*REG8(a))
 
 #endif
