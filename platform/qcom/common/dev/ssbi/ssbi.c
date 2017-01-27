@@ -38,6 +38,7 @@
 #include <platform/remote_spinlock.h>
 #endif
 
+#ifdef MSM_SSBI_BASE
 int i2c_ssbi_poll_for_device_ready(void)
 {
     unsigned long timeout = SSBI_TIMEOUT_US;
@@ -161,7 +162,9 @@ end:
 #endif
     return ret;
 }
+#endif
 
+#ifdef MSM_PA1_SSBI2_BASE
 int pa1_ssbi2_read_bytes(unsigned char  *buffer, unsigned short length,
                          unsigned short slave_addr)
 {
@@ -216,7 +219,9 @@ int pa1_ssbi2_write_bytes(unsigned char  *buffer, unsigned short length,
     }
     return 0;
 }
+#endif
 
+#ifdef MSM_PA2_SSBI2_BASE
 int pa2_ssbi2_read_bytes(unsigned char  *buffer, unsigned short length,
                          unsigned short slave_addr)
 {
@@ -270,3 +275,4 @@ int pa2_ssbi2_write_bytes(unsigned char  *buffer, unsigned short length,
     }
     return 0;
 }
+#endif
