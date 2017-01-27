@@ -27,7 +27,7 @@
 #include <kernel/thread.h>
 #include <platform/interrupts.h>
 #include <platform/debug.h>
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 
 #define LOCAL_TRACE 0
 

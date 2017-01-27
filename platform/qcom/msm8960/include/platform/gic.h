@@ -22,7 +22,7 @@
  */
 #pragma once
 
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 
 #define GICBASE(n)  (CPUPRIV_BASE)
 #define GICD_OFFSET (0x00000)

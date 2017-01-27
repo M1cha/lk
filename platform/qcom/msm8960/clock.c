@@ -36,7 +36,7 @@
 #include <platform/common/clock_pll.h>
 #include <platform/common/clock-local.h>
 #include <bits.h>
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 #include <platform/clock.h>
 #include <sys/types.h>
 

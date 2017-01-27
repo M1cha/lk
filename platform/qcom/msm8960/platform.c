@@ -32,7 +32,7 @@
 #include <kernel/spinlock.h>
 #include <platform.h>
 #include <dev/interrupt/arm_gic.h>
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 
 #include <arch/arm.h>
 #include <arch/arm/mmu.h>

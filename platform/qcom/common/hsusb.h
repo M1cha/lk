@@ -31,7 +31,7 @@
 #ifndef _MSM7200_USB_H_
 #define _MSM7200_USB_H_
 
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 
 #define USB_ID               (MSM_USB_BASE + 0x0000)
 #define USB_HWGENERAL        (MSM_USB_BASE + 0x0004)

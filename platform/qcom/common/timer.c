@@ -28,7 +28,7 @@
 #include <platform/debug.h>
 #include <sys/types.h>
 #include <lib/fixed_point.h>
-#include <platform/qcom-msm8960.h>
+#include <platform/qcom-platform.h>
 
 #define LOCAL_TRACE 0
 
