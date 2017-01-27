@@ -38,6 +38,11 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/uart_dm.c
 endif
 
+ifeq ($(ENABLE_QCOM_GPIOMUX),true)
+MODULE_SRCS += \
+	$(LOCAL_DIR)/gpiomux.c
+endif
+
 ifeq ($(ENABLE_QCOM_DEV_SSBI),true)
 MODULE_DEPS += \
 	$(LOCAL_DIR)/dev/ssbi

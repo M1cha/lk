@@ -41,6 +41,7 @@
 #define MSM_USB_BASE          (PERIPHERAL_BASE_VIRT + 0x12400000)
 #define MSM_PA1_SSBI2_BASE    (PERIPHERAL_BASE_VIRT + 0x00400000)
 #define MSM_PA2_SSBI2_BASE    (PERIPHERAL_BASE_VIRT + 0x00b00000)
+#define TLMM_BASE_ADDR        (PERIPHERAL_BASE_VIRT + 0x00700000)
 
 #define GIC_PPI_START 16
 #define GIC_SPI_START 32
@@ -48,6 +49,9 @@
 #define GSBI7_UARTDM_IRQ        (GIC_SPI_START + 158)
 #define USB1_HS_IRQ             (GIC_SPI_START + 100)
 #define INT_USB_HS              (USB1_HS_IRQ)
+
+#define GPIO_CONFIG_ADDR(x) (TLMM_BASE_ADDR + 0x1000 + (x)*0x10)
+#define GPIO_IN_OUT_ADDR(x) (TLMM_BASE_ADDR + 0x1004 + (x)*0x10)
 
 void qcom_timer_early_init(addr_t _control_base);
 void qcom_timer_init(uint32_t freq);
