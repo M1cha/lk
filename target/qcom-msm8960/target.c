@@ -1,5 +1,12 @@
 #include <stdlib.h>
 #include <platform/common/mmc.h>
+#include <platform/common/uartdm.h>
+#include <platform/qcom-platform.h>
+
+void target_early_init(void)
+{
+    uartdm_init(7, PERIPHERAL_BASE_VIRT+0x16500000, PERIPHERAL_BASE_VIRT+0x16540000);
+}
 
 void target_mmc_caps(struct mmc_host *host)
 {

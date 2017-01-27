@@ -107,8 +107,6 @@ void platform_early_init(void)
     arm_gic_init();
     qcom_timer_init(6750000);
 
-    uartdm_init(7, PERIPHERAL_BASE_VIRT+0x16500000, PERIPHERAL_BASE_VIRT+0x16540000);
-
     /* add the main memory arena */
     pmm_add_arena(&arena);
 }
