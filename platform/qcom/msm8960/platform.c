@@ -35,6 +35,10 @@
 #include <platform.h>
 #include <dev/interrupt/arm_gic.h>
 #include <platform/qcom-platform.h>
+#include <platform/common/timer.h>
+#include <platform/common/uartdm.h>
+#include <platform/common/clock.h>
+#include <platform/common/gpiomux.h>
 
 #include <arch/arm.h>
 #include <arch/arm/mmu.h>
@@ -100,7 +104,7 @@ void platform_early_init(void)
     arm_gic_init();
     qcom_timer_init(6750000);
 
-    uart_init_early();
+    uartdm_init(7, PERIPHERAL_BASE_VIRT+0x16500000, PERIPHERAL_BASE_VIRT+0x16540000);
 
     /* add the main memory arena */
     pmm_add_arena(&arena);
@@ -108,5 +112,21 @@ void platform_early_init(void)
 
 void platform_init(void)
 {
-    uart_init();
+}
+
+void uartdm_platform_config(uint8_t port)
+{
+    char gsbi_uart_clk_id[64];
+    char gsbi_p_clk_id[64];
+
+    snprintf(gsbi_uart_clk_id, 64,"gsbi%u_uart_clk", port);
+    clk_get_set_enable(gsbi_uart_clk_id, 1843200, 1);
+
+    snprintf(gsbi_p_clk_id, 64,"gsbi%u_pclk", port);
+    clk_get_set_enable(gsbi_p_clk_id, 0, 1);
+
+    // configure rx gpio
+    gpiomux_tlmm_config(83, GPIOMUX_FUNC_1, GPIOMUX_IN, GPIOMUX_PULL_NONE, GPIOMUX_DRV_8MA);
+    // configure tx gpio
+    gpiomux_tlmm_config(82, GPIOMUX_FUNC_2, GPIOMUX_OUT_LOW, GPIOMUX_PULL_NONE, GPIOMUX_DRV_8MA);
 }

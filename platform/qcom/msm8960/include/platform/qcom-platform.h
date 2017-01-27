@@ -33,7 +33,6 @@
 #define IMEM_SIZE      (MB)
 
 #define CPUPRIV_BASE   (PERIPHERAL_BASE_VIRT + 0x01f00000)
-#define UART_BASE      (PERIPHERAL_BASE_VIRT + 0x16540000)
 #define TMR_BASE       (CPUPRIV_BASE + 0x0a000)
 
 #define MSM_CLK_CTL_BASE      (PERIPHERAL_BASE_VIRT + 0x00800000)
@@ -56,3 +55,4 @@
 void qcom_timer_early_init(addr_t _control_base);
 void qcom_timer_init(uint32_t freq);
 void qcom_clocks_init(void);
+void uartdm_platform_config(uint8_t port);

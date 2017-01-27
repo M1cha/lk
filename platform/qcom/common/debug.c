@@ -22,24 +22,22 @@
  */
 #include <reg.h>
 #include <stdio.h>
-#include <kernel/thread.h>
 #include <dev/uart.h>
 #include <platform.h>
 #include <platform/debug.h>
-#include <reg.h>
 
 #define DEBUG_UART 0
 
 void platform_dputc(char c)
 {
     if (c == '\n')
-        uart_putc(DEBUG_UART, '\r');
-    uart_putc(DEBUG_UART, c);
+        uart_putc(0, '\r');
+    uart_putc(0, c);
 }
 
 int platform_dgetc(char *c, bool wait)
 {
-    int ret = uart_getc(DEBUG_UART, wait);
+    int ret = uart_getc(0, wait);
     if (ret == -1)
         return -1;
     *c = ret;
