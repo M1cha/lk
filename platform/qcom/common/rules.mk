@@ -43,6 +43,15 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/gpiomux.c
 endif
 
+ifeq ($(ENABLE_QCOM_MMC),true)
+MODULE_DEPS += \
+	lib/bio \
+	lib/partition
+
+MODULE_SRCS += \
+	$(LOCAL_DIR)/mmc.c
+endif
+
 ifeq ($(ENABLE_QCOM_DEV_SSBI),true)
 MODULE_DEPS += \
 	$(LOCAL_DIR)/dev/ssbi
