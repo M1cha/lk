@@ -38,4 +38,14 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/uart_dm.c
 endif
 
+ifeq ($(ENABLE_QCOM_DEV_SSBI),true)
+MODULE_DEPS += \
+	$(LOCAL_DIR)/dev/ssbi
+endif
+
+ifeq ($(ENABLE_QCOM_DEV_PMIC_PM8921),true)
+MODULE_DEPS += \
+	$(LOCAL_DIR)/dev/pmic/pm8921
+endif
+
 include make/module.mk

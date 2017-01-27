@@ -26,6 +26,8 @@
 #include <trace.h>
 
 #include <dev/uart.h>
+#include <dev/pm8921.h>
+#include <dev/ssbi.h>
 #include <arch.h>
 #include <lk/init.h>
 #include <kernel/vm.h>
@@ -36,6 +38,8 @@
 
 #include <arch/arm.h>
 #include <arch/arm/mmu.h>
+
+static pm8921_dev_t pmic;
 
 /* initial memory mappings. parsed by start.S */
 struct mmu_initial_mapping mmu_initial_mappings[] = {
@@ -87,6 +91,11 @@ void platform_early_init(void)
     qcom_timer_early_init(TMR_BASE);
 
     qcom_clocks_init();
+
+    // Initialize PMIC driver
+    pmic.read = (pm8921_read_func) & pa1_ssbi2_read_bytes;
+    pmic.write = (pm8921_write_func) & pa1_ssbi2_write_bytes;
+    pm8921_init(&pmic);
 
     arm_gic_init();
     qcom_timer_init(6750000);
