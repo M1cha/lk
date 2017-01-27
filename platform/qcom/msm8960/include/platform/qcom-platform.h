@@ -52,7 +52,5 @@
 #define GPIO_CONFIG_ADDR(x) (TLMM_BASE_ADDR + 0x1000 + (x)*0x10)
 #define GPIO_IN_OUT_ADDR(x) (TLMM_BASE_ADDR + 0x1004 + (x)*0x10)
 
-void qcom_timer_early_init(addr_t _control_base);
-void qcom_timer_init(uint32_t freq);
 void qcom_clocks_init(void);
 void uartdm_platform_config(uint8_t port);
